@@ -8,7 +8,7 @@ from setuptools import setup, find_packages
 
 # setup(
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 DESCRIPTION = "Wrapper for Zoho API operations; migration, automations,  etc."
 LONG_DESCRIPTION = "Initially began as a pet project, the ZohoSolutionsSuite \
 	seeks to bring the ease of use that Deluge offers to endpoints, to other apps as well!"

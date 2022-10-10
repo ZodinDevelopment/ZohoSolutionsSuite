@@ -38,7 +38,8 @@ class Token:
 		grant_token=None,
 		refresh_token=None,
 		save_refresh=True,
-		default_filename='zohotoken.pkl'
+		default_filename='zohotoken.pkl',
+		max_retries=10
 	):
 		"""
 		client_id: 						Can be found in Self Client option in api-console.zoho.com
@@ -46,6 +47,7 @@ class Token:
 		grant_token: 					Token generated from Self Client interface in api-console.zoho.com, must have valid scope
 		refresh_token: 					Token from previous OAuth session that can be used to refresh your session.
 		save_refresh: 					Boolean configuration option for User, save on token refresh to file or not?
+		max_retries:					AMount of times the Token will attempt to reauthenticate when an error is received
 		filename:						String of the file name that token data should be written to.
 		messages:						List of strings, all Token operations and API calls made with Token will be logged here
 		"""
@@ -56,6 +58,8 @@ class Token:
 		self.save_refresh = save_refresh
 		self.filename = default_filename
 		self.messages = []
+		self.max_retries = max_retries
+		self.retries = 0
 		self.init_token_dir()
 
 		if refresh_token is not None:
@@ -74,6 +78,7 @@ class Token:
 		access_token 	->  (str) Used to authenticate when making any API call
 		refresh_token 	->	(str) Used to generate a new access token 
 		"""
+		message = {}
 		url = "https://accounts.zoho.com/oauth/v2/token"
 		data = {
 			"grant_type": "authorization_code",
@@ -83,6 +88,7 @@ class Token:
 		}
 
 		response = requests.post(url=url, data=data)
+		message['STATUS'] = response.status_code
 		if response.status_code == 200:
 			content = json.loads(response.content.decode('utf-8'))
 			access_token = content.get("access_token")
@@ -90,15 +96,17 @@ class Token:
 			self.auth_time = datetime.utcnow()
 			self.valid_for = content.get("expires_in")
 			if access_token is not None:
-				message = f'Token {access_token} generated at {self.auth_time}\nValid for {self.valid_for}'
+				#message = {}
+				message['INFO'] = f'Token {access_token} generated at {self.auth_time}\nValid for {self.valid_for}'
 			else:
-				message = f'Empty Token returned\nResponse Content:\n{content}'
+				message["INFO"] = f'Empty Token returned\nResponse Content:\n{content}'
 			self.messages.append(message)
 			# Need to implement token lifetime calculation 
 			return access_token, refresh_token
 		elif response.status_code >= 400 and response.status_code < 500:
 			content = json.loads(response.content.decode('utf-8'))
-			message = f"Token generation failed with status code {response.status_code}.\nResponse Content:\n{content}"
+			message["INFO"] = f"Token generation failed with status code {response.status_code}."
+			message["ERRORS"] = content
 			self.messages.append(message)
 
 	def _generate(self):
@@ -111,21 +119,24 @@ class Token:
 		Returns:
 		access_token 		->	(str) Used to authenticate when making any API call
 		"""
+		message = {}
 		url = f"https://accounts.zoho.com/oauth/v2/token?refresh_token={self.refresh}"
 		url += f"&client_id={self.client_id}"
 		url += f"&client_secret={self.client_secret}"
 		url += "&grant_type=refresh_token"
 
 		response = requests.post(url=url)
+		message["STATUS"] = response.status_code
 		if response.status_code == 200:
 			content = json.loads(response.content.decode('utf-8'))
 			access_token = content.get("access_token")
 			self.auth_time = datetime.utcnow()
 			self.valid_for = content.get("expires_in")
 			if access_token is not None:
-				message = f'Token {access_token} generated at {self.auth_time.isoformat()}\nValid for {self.valid_for}'
+				message["INFO"] = f'Token {access_token} generated at {self.auth_time.isoformat()}\nValid for {self.valid_for}'
 			else:
-				message = f'Empty Token returned\nResponse Content:\n{content}'
+				message["INFO"] = f'Empty Token returned' 
+				message["ERRORS"] = content
 			self.messages.append(message)
 			return access_token
 
@@ -134,20 +145,21 @@ class Token:
 		Magic method that returns a directory path if path is verified and exists.
 		Else returns None object
 		"""
+		message = {}
 		current_login = os.getlogin()
 		dir_path = os.path.join("Users", current_login, ".zoauth")
 		if not os.is_dir(dir_path):
 			try:
 				os.mkdir(dir_path)
-				message = f"Token directory initialized at {dir_path}"
+				message["INFO"] = f"Token directory initialized at {dir_path}"
 				self.messages.append(message)
 				return dir_path
 			except Exception as e:
-				message = f"Error initializing token directory.\nError:\n{str(e)}"
+				message["INFO"] = f"Error initializing token directory.\nError:\n{str(e)}"
 				self.messages.append(message)
 				return None
 		else:
-			message = f"Token directory verified at {dir_path}"
+			message["INFO"] = f"Token directory verified at {dir_path}"
 			self.messages.append(message)
 			return dir_path
 
@@ -157,9 +169,10 @@ class Token:
 
 		filename 		-> (str) Name of the file to store token data
 		"""
+		message = {}
 		dir_path = self._verify_token_dir()
 		if dir_path is None:
-			message = "No Token directory found or verified. Cannot save token data to file!"
+			message["INFO"] = "No Token directory found or verified. Cannot save token data to file!"
 			self.messages.append(message)
 			return 
 		data_object = {
@@ -171,7 +184,7 @@ class Token:
 		with open(token_path, 'wb') as handle:
 			pickle.dump(data_object, handle, protocol=pickle.HIGHEST_PROTOCOL)
 		saved_at = datetime.utcnow()
-		message = f"Token data successfully saved at {os.path.join(dir_path, filename)}\nTime: {saved_at.isoformat()}"
+		message["INFO"] = f"Token data successfully saved at {os.path.join(dir_path, filename)}\nTime: {saved_at.isoformat()}"
 		self.messages.append(message)
 		return
 
@@ -186,11 +199,12 @@ class Token:
 
 		These values are pulled from the file that lives at the specified filename.
 		"""
-		dir_path = self._verify_token_dir()
+		message = {}
+		dir_path = cls._verify_token_dir()
 		if dir_path is None:
-			message = "No token directory found or verified. Cannot generate Token from file!"
-			self.messages.append(message)
-			return
+			message["INFO"] = "No token directory found or verified. Cannot generate Token from file!"
+			#self.messages.append(message)
+			return message
 
 		token_path = os.path.join(dir_path, filename)
 		try:
@@ -202,26 +216,39 @@ class Token:
 			return Token(client_id, client_secret, grant_token=None, refresh_token=refresh)
 
 		except FileNotFoundError as e:
-			message = f"There was a FileNotFoundError while attempting to read or load the data\nError:\n{str(e)}"
-			self.messages.append(message)
-			return None 
+			message["INFO"] = f"There was a FileNotFoundError while attempting to read or load the data"
+			#self.messages.append(message)
+			message["ERRORS"] = str(e)
+			return message
 
 		except KeyError as e:
-			message = f"Something went wrong while attempting to read your token data from the file.\nErrors\n{str(e)}"
-			self.messages.append(message)
-			return None 
+			message['INFO'] = f"Something went wrong while attempting to read your token data from the file."
+			message['ERRORS'] = str(e)
+			#self.messages.append(message)
+			return message
 
-	def generate(self):
+	def generate(self, retry=False):
 		""" 
 		Primary method that both users, and the library will interact with to trigger re-authentication.
 		"""
+		message = {}
+		if retry:
+			self.retries += 1
+			if self.retries >= self.max_retries:
+				message["INFO"] = "Token not generated, Maximum retry attempts reached."
+				self.messages.append(message)
+				raise Exception("Maximum authentication attempts reached.")
 		self.access = self._generate()
 		if self.save_refresh:
 			dir_path = self._verify_token_dir()
 			if dir_path is None:
-				message = "No token directory found or verified. Cannot generate Token from file!"
+				message["INFO"] = "No token directory found or verified. Cannot generate Token from file!"
 				self.messages.append(message)
 			token_path = os.path.join(dir_path, self.filename)
 			self.write_to_file(filename=self.filename)
-
-
+		
+	def flush_log(self, message):
+		self.messages.append(message)
+		if message['STATUS'] >= 200 and message['STATUS'] < 300:
+			self.retries = 0
+			
